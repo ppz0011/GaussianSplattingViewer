@@ -143,11 +143,11 @@ def visualize_split_ply_grid(folder_path, sample_per_part=5000, seed=42):
     plt.tight_layout()
     plt.show()
 if __name__ == "__main__":
-    split_ply_by_fitted_plane(
-        input_path="E:/tengbei220v_ply/point_cloud.ply",
-        output_dir="E:/tengbei220v_ply/split_parts100000000",
-        grid_shape=(5, 3),
-        max_points=100000000,  # 或设置为 20_000_000 测试运行
-    )
+    # split_ply_by_fitted_plane(
+    #     input_path="E:/tengbei220v_ply/point_cloud.ply",
+    #     output_dir="E:/tengbei220v_ply/split_parts100000000",
+    #     grid_shape=(5, 3),
+    #     max_points=100000000,  # 或设置为 20_000_000 测试运行
+    # )
 
-    visualize_split_ply_grid("E:/tengbei220v_ply/split_parts100000000", sample_per_part=2000)
+    visualize_split_ply_grid("E:/tengbei220v_ply/split_parts50000000", sample_per_part=2000)

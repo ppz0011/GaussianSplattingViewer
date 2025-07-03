@@ -2,7 +2,9 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 from dataclasses import dataclass
 
-
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from itertools import product, combinations
 
 
 def mask_to_indices(mask):
@@ -103,53 +105,126 @@ def naive_gaussian():
     )
 
 
-def load_ply(path):
-    max_sh_degree = 3
+def load_ply(path, is_center_at_origin=True):
     plydata = PlyData.read(path)
     xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                     np.asarray(plydata.elements[0]["y"]),
                     np.asarray(plydata.elements[0]["z"])),  axis=1)
+    
+    # ⬇️ 平移点云，将中心移到坐标原点
+    if is_center_at_origin:
+        centering_offset = np.mean(xyz, axis=0)
+        xyz = xyz - centering_offset
+        
+    else:
+        centering_offset = np.zeros(3, dtype=np.float32)
+        
     opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
-
     features_dc = np.zeros((xyz.shape[0], 3, 1))
     features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
     features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
     features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
 
     extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
-    extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-    assert len(extra_f_names)==3 * (max_sh_degree + 1) ** 2 - 3
+    extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split('_')[-1]))
+
+    # ⬇️ 推断 SH 阶数
+    num_extra_coeffs = len(extra_f_names)
+    sh_coeffs_per_channel = (num_extra_coeffs // 3) + 1  # +1 for DC
+    max_sh_degree = int(np.sqrt(sh_coeffs_per_channel) - 1)
+    assert sh_coeffs_per_channel == (max_sh_degree + 1)**2
+
     features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
     for idx, attr_name in enumerate(extra_f_names):
         features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-    # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+
+    # Reshape and transpose
     features_extra = features_extra.reshape((features_extra.shape[0], 3, (max_sh_degree + 1) ** 2 - 1))
     features_extra = np.transpose(features_extra, [0, 2, 1])
 
+    # Process scale and rotation
     scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
-    scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+    scale_names = sorted(scale_names, key=lambda x: int(x.split('_')[-1]))
     scales = np.zeros((xyz.shape[0], len(scale_names)))
     for idx, attr_name in enumerate(scale_names):
         scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
     rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
-    rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+    rot_names = sorted(rot_names, key=lambda x: int(x.split('_')[-1]))
     rots = np.zeros((xyz.shape[0], len(rot_names)))
     for idx, attr_name in enumerate(rot_names):
         rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
-    # pass activate function
+    # Final processing
     xyz = xyz.astype(np.float32)
     rots = rots / np.linalg.norm(rots, axis=-1, keepdims=True)
     rots = rots.astype(np.float32)
-    scales = np.exp(scales)
-    scales = scales.astype(np.float32)
-    opacities = 1/(1 + np.exp(- opacities))  # sigmoid
+    scales = np.exp(scales).astype(np.float32)
+    opacities = 1 / (1 + np.exp(-opacities))  # sigmoid
     opacities = opacities.astype(np.float32)
-    shs = np.concatenate([features_dc.reshape(-1, 3), 
-                        features_extra.reshape(len(features_dc), -1)], axis=-1).astype(np.float32)
+    
+    shs = np.concatenate([features_dc.reshape(-1, 3), features_extra.reshape(len(features_dc), -1)], axis=-1)
     shs = shs.astype(np.float32)
-    return GaussianData(xyz, rots, scales, opacities, shs)
+
+    return GaussianData(xyz, rots, scales, opacities, shs), centering_offset
+
+
+
+def plot_point_distribution(gaussian_data: GaussianData, title="Gaussian Point Cloud Position Distribution",
+                             sample_size=5000):
+    xyz = gaussian_data.xyz
+    N = len(xyz)
+
+    # 随机采样点
+    if N > sample_size:
+        indices = np.random.choice(N, sample_size, replace=False)
+        xyz_sampled = xyz[indices]
+    else:
+        xyz_sampled = xyz
+
+    # 计算边界盒角点
+    mins = xyz.min(axis=0)
+    maxs = xyz.max(axis=0)
+    corner_points = np.array(list(product(*zip(mins, maxs))))
+
+    # 合并采样点和角点
+    all_points = np.concatenate([xyz_sampled, corner_points], axis=0)
+
+    # 绘图
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # 绘制点云
+    ax.scatter(
+        xyz_sampled[:, 0], xyz_sampled[:, 1], xyz_sampled[:, 2],
+        color='blue', marker='o', s=3, alpha=0.6
+    )
+
+    # 绘制边界角点
+    ax.scatter(
+        corner_points[:, 0], corner_points[:, 1], corner_points[:, 2],
+        color='red', marker='x', s=30, label='Bounding Box Corners'
+    )
+
+    # 添加边界框线段（12条边）
+    for start, end in combinations(corner_points, 2):
+        diff = np.abs(start - end)
+        if np.count_nonzero(diff) == 1:  # 只在一个维度上不同 → 是合法边
+            ax.plot(
+                [start[0], end[0]],
+                [start[1], end[1]],
+                [start[2], end[2]],
+                color='black', linewidth=1
+            )
+
+    # 轴标签与图例
+    ax.set_title(title)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 

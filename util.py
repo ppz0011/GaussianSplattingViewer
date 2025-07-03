@@ -96,9 +96,9 @@ class Camera:
         self.fovy = np.pi / 2   # 垂直视野角度(弧度)，π/2=90度
 
         # 视图参数
-        self.position = np.array([0.0, 0.0, 0.0]).astype(np.float32)  # 相机位置(x,y,z)
-        self.target = np.array([0.0, 0.0, -1.0]).astype(np.float32)     # 相机注视的目标点
-        self.up = np.array([0.0, 1.0, 0.0]).astype(np.float32)        # 相机上方向向量(归一化)
+        self.position = np.array([3.0, 0.0, 0.0]).astype(np.float32)  # 相机位置(x,y,z)
+        self.target = np.array([0.0, 0.0, 0.0]).astype(np.float32)     # 相机注视的目标点
+        self.up = np.array([0.0, 0.0, 1.0]).astype(np.float32)        # 相机上方向向量(归一化)
 
 
         # 欧拉角

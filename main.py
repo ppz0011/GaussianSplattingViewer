@@ -34,6 +34,8 @@ g_renderer_idx = BACKEND_OGL
 g_renderer: GaussianRenderBase = g_renderer_list[g_renderer_idx]
 g_scale_modifier = 1.
 g_auto_sort = False
+g_is_center_at_origin = True  # 是否将点云中心移到坐标原点
+g_centering_offset = np.zeros(3, dtype=np.float32)  # 平移偏移量，默认为零向量
 g_show_control_win = True
 g_show_help_win = True
 g_show_camera_win = False
@@ -168,7 +170,7 @@ def draw_bbox_wireframe(bbox_state, camera):
     g_wireframe_renderer.render(mvp_matrix, bbox_state.is_selecting)
 
 def main():
-    global g_camera, g_renderer, g_renderer_list, g_renderer_idx, g_scale_modifier, g_auto_sort, \
+    global g_camera, g_renderer, g_renderer_list, g_renderer_idx, g_scale_modifier, g_auto_sort, g_is_center_at_origin, g_centering_offset,\
         g_show_control_win, g_show_help_win, g_show_camera_win, \
         g_render_mode, g_render_mode_tables, \
         g_bbox_state, g_original_gaussians, g_cropped_gaussians, \
@@ -254,7 +256,22 @@ def main():
                         "reduce updates", g_renderer.reduce_updates,
                     )
 
+                changed, g_is_center_at_origin = imgui.checkbox(
+                        "center at origin", g_is_center_at_origin,
+                    )
                 imgui.text(f"# of Gaus = {len(gaussians)}")
+                if imgui.button(label = 'plot_distribution'):
+                    
+                    file_path = filedialog.askopenfilename(title="open ply",
+                        initialdir="C:\\Users\\MSI_NB\\Downloads\\viewers",
+                        filetypes=[('ply file', '.ply')]
+                        )
+                    if file_path:
+                        try:
+                            test_gaussians, offset = util_gau.load_ply(file_path)
+                            util_gau.plot_point_distribution(test_gaussians, "test gaussians")
+                        except RuntimeError as e:
+                            pass
                 if imgui.button(label='open ply'):
                     file_path = filedialog.askopenfilename(title="open ply",
                         initialdir="C:\\Users\\MSI_NB\\Downloads\\viewers",
@@ -262,7 +279,7 @@ def main():
                         )
                     if file_path:
                         try:
-                            gaussians = util_gau.load_ply(file_path)
+                            gaussians, g_centering_offset = util_gau.load_ply(file_path, is_center_at_origin=g_is_center_at_origin)
                             g_renderer.update_gaussian_data(gaussians)
                             g_renderer.sort_and_update(g_camera)
                             g_original_gaussians = gaussians
