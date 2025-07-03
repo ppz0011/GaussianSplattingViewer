@@ -8,6 +8,74 @@ from collections import defaultdict
 
 import random
 
+def split_ply_by_xy_grid(input_path, output_dir, grid_shape=(4, 4), max_points=None):
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"📂 Loading PLY: {input_path}")
+    plydata = PlyData.read(input_path)
+    data = plydata.elements[0].data
+    total_points = len(data)
+
+    if max_points and total_points > max_points:
+        print(f"⚠️ Limiting to first {max_points:,} points (of {total_points:,})")
+        data = data[:max_points]
+        total_points = max_points
+
+    x = np.asarray(data['x'], dtype=np.float32)
+    y = np.asarray(data['y'], dtype=np.float32)
+    z = np.asarray(data['z'], dtype=np.float32)
+    xyz_all = np.stack([x, y, z], axis=1)
+
+    coord_limit = 1e4
+    valid_mask = (
+        np.all(np.isfinite(xyz_all), axis=1) &
+        (np.abs(xyz_all) < coord_limit).all(axis=1)
+    )
+
+    valid_indices = np.flatnonzero(valid_mask)
+    xyz = xyz_all[valid_mask]
+    print(f"✅ Valid points after filtering: {len(xyz):,} / {total_points:,}")
+
+    if len(xyz) < 100:
+        raise ValueError("🚫 Too few valid points after filtering!")
+
+    print("📊 Assigning points to XY grid...")
+    x_coords = xyz[:, 0]
+    y_coords = xyz[:, 1]
+    x_min, x_max = x_coords.min(), x_coords.max()
+    y_min, y_max = y_coords.min(), y_coords.max()
+
+    x_bins = np.linspace(x_min, x_max, grid_shape[0] + 1)
+    y_bins = np.linspace(y_min, y_max, grid_shape[1] + 1)
+
+    grid_indices = [[[] for _ in range(grid_shape[0])] for _ in range(grid_shape[1])]
+
+    for i in range(len(xyz)):
+        xi, yi = x_coords[i], y_coords[i]
+        x_idx = np.searchsorted(x_bins, xi, side='right') - 1
+        y_idx = np.searchsorted(y_bins, yi, side='right') - 1
+        x_idx = min(max(x_idx, 0), grid_shape[0] - 1)
+        y_idx = min(max(y_idx, 0), grid_shape[1] - 1)
+        grid_indices[y_idx][x_idx].append(i)
+
+    print("💾 Exporting sub-ply files...")
+    for y in range(grid_shape[1]):
+        for x in range(grid_shape[0]):
+            local_idxs = grid_indices[y][x]
+            if not local_idxs:
+                print(f"  ⛔ Skipping empty cell ({x}, {y})")
+                continue
+            real_idxs = valid_indices[local_idxs]
+            sub_data = data[real_idxs]
+            el = PlyElement.describe(sub_data, 'vertex')
+            filename = f"part_x{x}_y{y}.ply"
+            out_path = os.path.join(output_dir, filename)
+            PlyData([el], text=False).write(out_path)
+            print(f"  ✅ Saved {len(local_idxs):,} points to {filename}")
+
+    print("🎉 Done (XY Grid)!")
+
+
 def split_ply_by_fitted_plane(input_path, output_dir, grid_shape=(5, 3), max_points=None):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -150,4 +218,11 @@ if __name__ == "__main__":
     #     max_points=100000000,  # 或设置为 20_000_000 测试运行
     # )
 
-    visualize_split_ply_grid("E:/tengbei220v_ply/split_parts50000000", sample_per_part=2000)
+    split_ply_by_xy_grid(
+        input_path="E:/tengbei220v_ply/point_cloud.ply",
+        output_dir="E:/tengbei220v_ply/split_parts10000000",
+        grid_shape=(4, 4),
+        max_points=10000000,  # 或设置为 20_000_000 测试运行
+    )
+
+    visualize_split_ply_grid("E:/tengbei220v_ply/split_parts10000000", sample_per_part=2000)
