@@ -227,78 +227,92 @@ def plot_point_distribution(gaussian_data: GaussianData, title="Gaussian Point C
     plt.show()
 
 
-
-
-def save_ply(gaussian_data: GaussianData, path: str):
+def save_ply(gaussian_data: GaussianData, path: str,
+            is_center_at_origin, centering_offset):
     """
     Save GaussianData to a .ply file.
-    
+
     Args:
         path: Output .ply file path
         gaussian_data: GaussianData object to save
     """
-    max_sh_degree = 3
-    # Prepare data in the same format as loaded by load_ply
-    xyz = gaussian_data.xyz
-    rots = gaussian_data.rot
-    scales = np.log(gaussian_data.scale)  # Inverse of exp in load_ply
-    opacities = -np.log(1.0 / gaussian_data.opacity - 1.0)  # Inverse of sigmoid
-    
-    # Split SH coefficients into DC and rest
-    sh_dim = 3 * ((max_sh_degree + 1) ** 2)
-    assert gaussian_data.sh_dim == sh_dim, f"Expected SH dim {sh_dim}, got {gaussian_data.sh_dim}"
-    
-    features_dc = gaussian_data.sh[:, :3].reshape(-1, 3, 1)
-    features_extra = gaussian_data.sh[:, 3:].reshape(-1, (max_sh_degree + 1) ** 2 - 1, 3)
-    features_extra = np.transpose(features_extra, [0, 2, 1]).reshape(-1, 3 * ((max_sh_degree + 1) ** 2 - 1))
+    import numpy as np
+    from plyfile import PlyData, PlyElement
 
-    # Create the structured array for PLY data
+    # 确保 opacity 不为 0，避免除零错误
+    gaussian_data.opacity = np.clip(gaussian_data.opacity, 1e-6, 1.0)  # 避免除零
+    opacities = -np.log(1.0 / gaussian_data.opacity - 1.0)
+
+    # 推断 SH 阶数 d: sh_dim = 3 * (d+1)^2
+    sh_dim = gaussian_data.sh_dim
+    num_sh_coeffs = sh_dim // 3
+    sh_degree = int(np.sqrt(num_sh_coeffs) - 1)
+
+    # 拆分属性
+    xyz = gaussian_data.xyz.copy()
+    if is_center_at_origin:
+        xyz += centering_offset  # Apply offset to center point cloud back to real-world coordinates
+
+    rots = gaussian_data.rot
+    scales = np.log(gaussian_data.scale)
+
+    # 确保 gaussian_data.sh 不是空数组，并且具有足够的维度
+    if gaussian_data.sh.size > 0:
+        features_dc = gaussian_data.sh[:, :3].reshape(-1, 3, 1)
+        if gaussian_data.sh.shape[1] > 3:
+            features_extra = gaussian_data.sh[:, 3:].reshape(-1, num_sh_coeffs - 1, 3)
+            features_extra = np.transpose(features_extra, [0, 2, 1]).reshape(-1, 3 * (num_sh_coeffs - 1))
+        else:
+            features_extra = np.zeros((len(gaussian_data), 0))  # 如果没有额外的 SH 系数，确保其为空
+    else:
+        features_dc = np.zeros((len(gaussian_data), 3, 1))
+        features_extra = np.zeros((len(gaussian_data), 0))
+
+    # 定义结构化数据类型
     dtype = [
         ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
         ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4'),
         ('opacity', 'f4')
     ]
-    
-    # Add scale attributes
+
+    # 添加 scale
     for i in range(3):
         dtype.append((f'scale_{i}', 'f4'))
-    
-    # Add rotation attributes
+
+    # 添加 rot
     for i in range(4):
         dtype.append((f'rot_{i}', 'f4'))
-    
-    # Add spherical harmonics rest attributes
-    for i in range(3 * ((max_sh_degree + 1) ** 2 - 1)):
+
+    # 添加 SH 剩余部分
+    for i in range(3 * (num_sh_coeffs - 1)):
         dtype.append((f'f_rest_{i}', 'f4'))
-    
-    # Create and fill the structured array
+
+    # 填充数据
     num_points = len(gaussian_data)
     vertex_data = np.zeros(num_points, dtype=dtype)
-    
+
     vertex_data['x'] = xyz[:, 0]
     vertex_data['y'] = xyz[:, 1]
     vertex_data['z'] = xyz[:, 2]
-    
+
     vertex_data['f_dc_0'] = features_dc[:, 0, 0]
     vertex_data['f_dc_1'] = features_dc[:, 1, 0]
     vertex_data['f_dc_2'] = features_dc[:, 2, 0]
-    
+
     vertex_data['opacity'] = opacities[:, 0]
-    
+
     for i in range(3):
         vertex_data[f'scale_{i}'] = scales[:, i]
-    
+
     for i in range(4):
         vertex_data[f'rot_{i}'] = rots[:, i]
-    
+
     for i in range(features_extra.shape[1]):
         vertex_data[f'f_rest_{i}'] = features_extra[:, i]
-    
-    # Create the PlyElement and save
+
+    # 写入 .ply 文件
     vertex_element = PlyElement.describe(vertex_data, 'vertex')
     PlyData([vertex_element], text=False).write(path)
-
-
 
 
 if __name__ == "__main__":
