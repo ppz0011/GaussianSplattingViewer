@@ -33,10 +33,16 @@ g_renderer_list = [
 g_renderer_idx = BACKEND_OGL
 g_renderer: GaussianRenderBase = g_renderer_list[g_renderer_idx]
 g_scale_modifier = 1.
-g_auto_sort = False
+g_auto_sort = True
+g_is_center_at_origin = True  # 是否将点云中心移到坐标原点
+g_centering_offset = np.zeros(3, dtype=np.float32)  # 平移偏移量，默认为零向量
+g_is_crop_box_enabled = False  # 是否启用裁剪框
+
 g_show_control_win = True
-g_show_help_win = True
+g_show_clip_box_control_win = False
+g_show_help_win = False
 g_show_camera_win = False
+
 g_render_mode_tables = ["Gaussian Ball", "Flat Ball", "Billboard", "Depth", "SH:0", "SH:0~1", "SH:0~2", "SH:0~3 (default)"]
 g_render_mode = 7
 
@@ -89,12 +95,12 @@ def wheel_callback(window, dx, dy):
     g_camera.process_wheel(dx, dy)
 
 def key_callback(window, key, scancode, action, mods):
-    if action == glfw.PRESS or action == glfw.REPEAT:
+    # if action == glfw.PRESS or action == glfw.REPEAT:
         # 镜头旋转控制
-        if key == glfw.KEY_Q:
-            g_camera.process_roll_key(1)
-        elif key == glfw.KEY_E:
-            g_camera.process_roll_key(-1)
+        # if key == glfw.KEY_Q:
+        #     g_camera.process_roll_key(1)
+        # elif key == glfw.KEY_E:
+        #     g_camera.process_roll_key(-1)
 
     # 处理移动模块按键
     if key in g_camera.key_states:
@@ -168,8 +174,8 @@ def draw_bbox_wireframe(bbox_state, camera):
     g_wireframe_renderer.render(mvp_matrix, bbox_state.is_selecting)
 
 def main():
-    global g_camera, g_renderer, g_renderer_list, g_renderer_idx, g_scale_modifier, g_auto_sort, \
-        g_show_control_win, g_show_help_win, g_show_camera_win, \
+    global g_camera, g_renderer, g_renderer_list, g_renderer_idx, g_scale_modifier, g_auto_sort, g_is_center_at_origin, g_centering_offset,g_is_crop_box_enabled,\
+        g_show_control_win, g_show_clip_box_control_win, g_show_help_win, g_show_camera_win, \
         g_render_mode, g_render_mode_tables, \
         g_bbox_state, g_original_gaussians, g_cropped_gaussians, \
         g_wireframe_renderer
@@ -254,7 +260,22 @@ def main():
                         "reduce updates", g_renderer.reduce_updates,
                     )
 
+                changed, g_is_center_at_origin = imgui.checkbox(
+                        "center at origin", g_is_center_at_origin,
+                    )
                 imgui.text(f"# of Gaus = {len(gaussians)}")
+                if imgui.button(label = 'plot_distribution'):
+                    
+                    file_path = filedialog.askopenfilename(title="open ply",
+                        initialdir="C:\\Users\\MSI_NB\\Downloads\\viewers",
+                        filetypes=[('ply file', '.ply')]
+                        )
+                    if file_path:
+                        try:
+                            test_gaussians, offset = util_gau.load_ply(file_path)
+                            util_gau.plot_point_distribution(test_gaussians, "test gaussians")
+                        except RuntimeError as e:
+                            pass
                 if imgui.button(label='open ply'):
                     file_path = filedialog.askopenfilename(title="open ply",
                         initialdir="C:\\Users\\MSI_NB\\Downloads\\viewers",
@@ -262,7 +283,7 @@ def main():
                         )
                     if file_path:
                         try:
-                            gaussians = util_gau.load_ply(file_path)
+                            gaussians, g_centering_offset = util_gau.load_ply(file_path, is_center_at_origin=g_is_center_at_origin)
                             g_renderer.update_gaussian_data(gaussians)
                             g_renderer.sort_and_update(g_camera)
                             g_original_gaussians = gaussians
@@ -279,7 +300,9 @@ def main():
                         filetypes=[("PLY Files", "*.ply"), ("All Files", "*.*")]  # 文件类型过滤
                     )
                     if save_path:
-                        util_gau.save_ply(g_renderer.gaussians, save_path)
+                        util_gau.save_ply(g_renderer.gaussians, save_path, 
+                                          is_center_at_origin=g_is_center_at_origin,
+                                          centering_offset=g_centering_offset)
                         print("PLY File saved to:", save_path)
                     else:
                         print("Save cancelled.")
@@ -328,65 +351,110 @@ def main():
                     bufferdata = gl.glReadPixels(0, 0, width, height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
                     img = np.frombuffer(bufferdata, np.uint8, -1).reshape(height, width, 3)
                     imageio.imwrite("save.png", img[::-1])
-                    # save intermediate information
-                    # np.savez(
-                    #     "save.npz",
-                    #     gau_xyz=gaussians.xyz,
-                    #     gau_s=gaussians.scale,
-                    #     gau_rot=gaussians.rot,
-                    #     gau_c=gaussians.sh,
-                    #     gau_a=gaussians.opacity,
-                    #     viewmat=g_camera.get_view_matrix(),
-                    #     projmat=g_camera.get_project_matrix(),
-                    #     hfovxyfocal=g_camera.get_htanfovxy_focal()
-                    # )
-
-
-                if imgui.button(label = "save camera pose"):
-                    g_camera.save_pose_to_file()
-                imgui.same_line()
-                if imgui.button(label = "load camera pose"):
-                    g_camera.load_pose_from_file()
-                if imgui.button(label = "reset camera pose"):
-                    g_camera.reset_pose()
-
-                # start select BBOX按钮逻辑
-                if imgui.button(label = "start select BBOX"):
-                    if not g_bbox_state.is_selecting:
-                        g_bbox_state.start_point = g_camera.position.copy()
-                        g_bbox_state.is_selecting = True
-                        g_bbox_state.is_finalized = False
+                   
+                if imgui.button(label = 'clip box'):
+                    if not g_show_clip_box_control_win:
+                        g_show_clip_box_control_win = True
                     else:
-                        g_bbox_state.reset()  # 取消选择
-
-                # select BBox over按钮逻辑（仅在已选择起点时可用）
-                imgui.same_line()
-                if imgui.button(label = "select BBox over") and g_bbox_state.is_selecting:
-                    g_bbox_state.end_point = g_camera.position.copy()
-                    g_bbox_state.is_finalized = True
-                    g_bbox_state.is_selecting = False
-
-                # crop BBox按钮逻辑（仅在完成选择时可用）
-                if imgui.button(label = "crop BBox") and g_bbox_state.is_finalized:
-                    # 执行裁剪
-                    bbox_min = np.minimum(g_bbox_state.start_point, g_bbox_state.end_point)
-                    bbox_max = np.maximum(g_bbox_state.start_point, g_bbox_state.end_point)
-                    
-                    mask = util_gau.GaussianData.static_get_bbox_mask(g_original_gaussians.xyz, bbox_min, bbox_max)
-                    g_cropped_gaussians = g_original_gaussians.crop_with_mask(mask)
-
-                    g_renderer.update_gaussian_data(g_cropped_gaussians)
-                    g_renderer.sort_and_update(g_camera)
-
-                imgui.same_line()
-                if imgui.button(label = "undo crop"):
-                    #撤销裁剪
-                    g_renderer.update_gaussian_data(g_original_gaussians)
-                    g_renderer.sort_and_update(g_camera)
-                    g_cropped_gaussians = None
-
+                        g_show_clip_box_control_win = False
+                    g_renderer.toggle_crop_box_visibility()
+                    g_renderer.toggle_control_points()
+                
                 imgui.end()
 
+        if g_show_clip_box_control_win:
+            imgui.begin("Clip Box Control", True)
+
+            imgui.text("Start Point")
+            imgui.separator()
+            changed_sx, g_bbox_state.start_point[0] = imgui.slider_float(
+                "start_x", g_bbox_state.start_point[0], -100., 100., "start x = %.3f"
+            )
+            changed_sy, g_bbox_state.start_point[1] = imgui.slider_float(
+                "start_y", g_bbox_state.start_point[1], -100., 100., "start y = %.3f"
+            )
+            changed_sz, g_bbox_state.start_point[2] = imgui.slider_float(
+                "start_z", g_bbox_state.start_point[2], -100., 100., "start z = %.3f"
+            )
+
+            imgui.text("End Point")
+            imgui.separator()
+            changed_ex, g_bbox_state.end_point[0] = imgui.slider_float(
+                "end_x", g_bbox_state.end_point[0], -100., 100., "end x = %.3f"
+            )
+            changed_ey, g_bbox_state.end_point[1] = imgui.slider_float(
+                "end_y", g_bbox_state.end_point[1], -100., 100., "end y = %.3f"
+            )
+            changed_ez, g_bbox_state.end_point[2] = imgui.slider_float(
+                "end_z", g_bbox_state.end_point[2], -100., 100., "end z = %.3f"
+            )
+
+            # 裁剪框是否起作用
+            changed_enabled, g_is_crop_box_enabled = imgui.checkbox(
+                        "is crop box enabled", g_is_crop_box_enabled,
+                    )
+            
+            if changed_enabled:
+                g_renderer.toggle_crop_box_enabled()
+
+            # 只在有变化时更新
+            if any([changed_sx, changed_sy, changed_sz, changed_ex, changed_ey, changed_ez, changed_enabled]):
+                g_renderer.set_crop_box(g_bbox_state.start_point, g_bbox_state.end_point)
+
+            
+
+            # if imgui.button(label = "save camera pose"):
+            #         g_camera.save_pose_to_file()
+            # imgui.same_line()
+            # if imgui.button(label = "load camera pose"):
+            #     g_camera.load_pose_from_file()
+            # if imgui.button(label = "reset camera pose"):
+            #     g_camera.reset_pose()
+
+            # # start select BBOX按钮逻辑
+            # if imgui.button(label = "start select BBOX"):
+            #     if not g_bbox_state.is_selecting:
+            #         g_bbox_state.start_point = g_camera.position.copy()
+            #         g_bbox_state.is_selecting = True
+            #         g_bbox_state.is_finalized = False
+            #     else:
+            #         g_bbox_state.reset()  # 取消选择
+
+            # # select BBox over按钮逻辑（仅在已选择起点时可用）
+            # imgui.same_line()
+            # if imgui.button(label = "select BBox over") and g_bbox_state.is_selecting:
+            #     g_bbox_state.end_point = g_camera.position.copy()
+            #     g_bbox_state.is_finalized = True
+            #     g_bbox_state.is_selecting = False
+                
+            #     g_renderer.set_crop_box(g_bbox_state.start_point, g_bbox_state.end_point)
+                
+
+            # crop BBox按钮逻辑（仅在完成选择时可用）
+            if imgui.button(label = "crop BBox"):
+                # 执行裁剪
+                bbox_min = np.minimum(g_bbox_state.start_point, g_bbox_state.end_point)
+                bbox_max = np.maximum(g_bbox_state.start_point, g_bbox_state.end_point)
+
+                print("crop bbox min:", bbox_min)
+                print("crop bbox max:", bbox_max)
+
+                mask = util_gau.GaussianData.static_get_bbox_mask(g_original_gaussians.xyz, bbox_min, bbox_max)
+                g_cropped_gaussians = g_original_gaussians.crop_with_mask(mask)
+
+                g_renderer.update_gaussian_data(g_cropped_gaussians)
+                g_renderer.sort_and_update(g_camera)
+
+            imgui.same_line()
+            if imgui.button(label = "undo crop"):
+                #撤销裁剪
+                g_renderer.update_gaussian_data(g_original_gaussians)
+                g_renderer.sort_and_update(g_camera)
+                g_cropped_gaussians = None
+                    
+            imgui.end()
+
+            
         if g_show_camera_win:
             if imgui.button(label='rot 180'):
                 g_camera.flip_ground()

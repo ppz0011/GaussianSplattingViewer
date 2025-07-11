@@ -13,11 +13,17 @@ import os
 
 
 class BBoxState:
-    def __init__(self):
-        self.start_point = None     # 起点坐标
-        self.end_point = None       # 终点坐标
-        self.is_selecting = False   # 是否正在选择起点
-        self.is_finalized = False   # 是否已完成选择
+    def __init__(self, start_point=None, end_point=None):
+        if start_point is None:
+            start_point = np.array([-1.0, -1.0, -1.0])
+        if end_point is None:
+            end_point = np.array([1.0, 1.0, 1.0])
+            
+        self.start_point = np.copy(start_point)  # 起点坐标
+        self.end_point = np.copy(end_point)      # 终点坐标
+        self.is_selecting = False    # 是否正在选择起点
+        self.is_finalized = False    # 是否已完成选择
+    
     def reset(self):
         """重置所有状态"""
         self.__init__()
@@ -96,9 +102,9 @@ class Camera:
         self.fovy = np.pi / 2   # 垂直视野角度(弧度)，π/2=90度
 
         # 视图参数
-        self.position = np.array([0.0, 0.0, 0.0]).astype(np.float32)  # 相机位置(x,y,z)
-        self.target = np.array([0.0, 0.0, -1.0]).astype(np.float32)     # 相机注视的目标点
-        self.up = np.array([0.0, 1.0, 0.0]).astype(np.float32)        # 相机上方向向量(归一化)
+        self.position = np.array([3.0, 0.0, 0.0]).astype(np.float32)  # 相机位置(x,y,z)
+        self.target = np.array([0.0, 0.0, 0.0]).astype(np.float32)     # 相机注视的目标点
+        self.up = np.array([0.0, 0.0, 1.0]).astype(np.float32)        # 相机上方向向量(归一化)
 
 
         # 欧拉角
@@ -141,8 +147,8 @@ class Camera:
             glfw.KEY_A: False,
             glfw.KEY_S: False,
             glfw.KEY_D: False,
-            glfw.KEY_SPACE: False,
-            glfw.KEY_LEFT_CONTROL: False,
+            glfw.KEY_Q: False,
+            glfw.KEY_E: False,
             glfw.KEY_LEFT_SHIFT: False
         }
     
@@ -321,8 +327,8 @@ class Camera:
         if self.key_states[glfw.KEY_S]: dz -= 1.0    # 后
         if self.key_states[glfw.KEY_A]: dx -= 1.0    # 左
         if self.key_states[glfw.KEY_D]: dx += 1.0    # 右
-        if self.key_states[glfw.KEY_SPACE]: dy += 1.0    # 上
-        if self.key_states[glfw.KEY_LEFT_CONTROL]: dy -= 1.0    # 下
+        if self.key_states[glfw.KEY_Q]: dy -= 1.0    # 上
+        if self.key_states[glfw.KEY_E]: dy += 1.0    # 下
         
         # 如果有移动输入，处理移动
         if dx != 0 or dy != 0 or dz != 0:
@@ -389,8 +395,8 @@ class Camera:
 
 
 def load_shaders(vs, fs):
-    vertex_shader = open(vs, 'r').read()        
-    fragment_shader = open(fs, 'r').read()
+    vertex_shader = open(vs, 'r', encoding='utf-8').read()        
+    fragment_shader = open(fs, 'r', encoding='utf-8').read()
 
     active_shader = shaders.compileProgram(
         shaders.compileShader(vertex_shader, GL_VERTEX_SHADER),

@@ -18,12 +18,6 @@
 #define SH_C3_6 -0.5900435899266435f
 
 layout(location = 0) in vec2 position;
-// layout(location = 1) in vec3 g_pos;
-// layout(location = 2) in vec4 g_rot;
-// layout(location = 3) in vec3 g_scale;
-// layout(location = 4) in vec3 g_dc_color;
-// layout(location = 5) in float g_opacity;
-
 
 #define POS_IDX 0
 #define ROT_IDX 3
@@ -33,12 +27,6 @@ layout(location = 0) in vec2 position;
 
 layout (std430, binding=0) buffer gaussian_data {
 	float g_data[];
-	// compact version of following data
-	// vec3 g_pos[];
-	// vec4 g_rot[];
-	// vec3 g_scale[];
-	// float g_opacity[];
-	// vec3 g_sh[];
 };
 layout (std430, binding=1) buffer gaussian_order {
 	int gi[];
@@ -50,14 +38,20 @@ uniform vec3 hfovxy_focal;
 uniform vec3 cam_pos;
 uniform int sh_dim;
 uniform float scale_modifier;
-uniform int render_mod;  // > 0 render 0-ith SH dim, -1 depth, -2 bill board, -3 gaussian
+uniform int render_mod;
+
+// 裁剪框相关uniform
+uniform int crop_enabled;
+uniform vec3 crop_min;
+uniform vec3 crop_max;
 
 out vec3 color;
 out float alpha;
 out vec3 conic;
-out vec2 coordxy;  // local coordinate in quad, unit in pixel
+out vec2 coordxy;
+out vec3 world_pos;  // 传递世界坐标到片段着色器进行精确裁剪
 
-mat3 computeCov3D(vec3 scale, vec4 q)  // should be correct
+mat3 computeCov3D(vec3 scale, vec4 q)
 {
     mat3 S = mat3(0.f);
     S[0][0] = scale.x;
@@ -82,7 +76,6 @@ mat3 computeCov3D(vec3 scale, vec4 q)  // should be correct
 vec3 computeCov2D(vec4 mean_view, float focal_x, float focal_y, float tan_fovx, float tan_fovy, mat3 cov3D, mat4 viewmatrix)
 {
     vec4 t = mean_view;
-    // why need this? Try remove this later
     float limx = 1.3f * tan_fovx;
     float limy = 1.3f * tan_fovy;
     float txtz = t.x / t.z;
@@ -99,10 +92,8 @@ vec3 computeCov2D(vec4 mean_view, float focal_x, float focal_y, float tan_fovx, 
     mat3 T = W * J;
 
     mat3 cov = transpose(T) * transpose(cov3D) * T;
-    // Apply low-pass filter: every Gaussian should be at least
-	// one pixel wide/high. Discard 3rd row and column.
-	cov[0][0] += 0.3f;
-	cov[1][1] += 0.3f;
+    cov[0][0] += 0.3f;
+    cov[1][1] += 0.3f;
     return vec3(cov[0][0], cov[0][1], cov[1][1]);
 }
 
@@ -121,16 +112,37 @@ void main()
 	int total_dim = 3 + 4 + 3 + 1 + sh_dim;
 	int start = boxid * total_dim;
 	vec4 g_pos = vec4(get_vec3(start + POS_IDX), 1.f);
+    
+    // 保存世界坐标用于片段着色器裁剪
+    world_pos = g_pos.xyz;
+    
+    // 如果启用裁剪框，进行粗略的早期裁剪
+    if (crop_enabled != 0) {
+        // 检查高斯点的中心是否在裁剪框外很远的地方，进行早期剔除
+        vec3 scale = get_vec3(start + SCALE_IDX) * scale_modifier;
+        float max_scale = max(max(scale.x, scale.y), scale.z);
+        
+        // 如果高斯点中心加上最大尺度仍在裁剪框外，直接剔除
+        if (g_pos.x + max_scale < crop_min.x || g_pos.x - max_scale > crop_max.x ||
+            g_pos.y + max_scale < crop_min.y || g_pos.y - max_scale > crop_max.y ||
+            g_pos.z + max_scale < crop_min.z || g_pos.z - max_scale > crop_max.z) {
+            gl_Position = vec4(-100, -100, -100, 1);
+            return;
+        }
+    }
+    
     vec4 g_pos_view = view_matrix * g_pos;
     vec4 g_pos_screen = projection_matrix * g_pos_view;
 	g_pos_screen.xyz = g_pos_screen.xyz / g_pos_screen.w;
     g_pos_screen.w = 1.f;
-	// early culling
+    
+	// 视锥剔除
 	if (any(greaterThan(abs(g_pos_screen.xyz), vec3(1.3))))
 	{
 		gl_Position = vec4(-100, -100, -100, 1);
 		return;
 	}
+    
 	vec4 g_rot = get_vec4(start + ROT_IDX);
 	vec3 g_scale = get_vec3(start + SCALE_IDX);
 	float g_opacity = g_data[start + OPACITY_IDX];
@@ -145,7 +157,7 @@ void main()
                               cov3d, 
                               view_matrix);
 
-    // Invert covariance (EWA algorithm)
+    // 协方差矩阵求逆
 	float det = (cov2d.x * cov2d.z - cov2d.y * cov2d.y);
 	if (det == 0.0f)
 		gl_Position = vec4(0.f, 0.f, 0.f, 0.f);
@@ -153,8 +165,8 @@ void main()
     float det_inv = 1.f / det;
 	conic = vec3(cov2d.z * det_inv, -cov2d.y * det_inv, cov2d.x * det_inv);
     
-    vec2 quadwh_scr = vec2(3.f * sqrt(cov2d.x), 3.f * sqrt(cov2d.z));  // screen space half quad height and width
-    vec2 quadwh_ndc = quadwh_scr / wh * 2;  // in ndc space
+    vec2 quadwh_scr = vec2(3.f * sqrt(cov2d.x), 3.f * sqrt(cov2d.z));
+    vec2 quadwh_ndc = quadwh_scr / wh * 2;
     g_pos_screen.xy = g_pos_screen.xy + position * quadwh_ndc;
     coordxy = position * quadwh_scr;
     gl_Position = g_pos_screen;
@@ -170,20 +182,20 @@ void main()
 		return;
 	}
 
-	// Covert SH to color
+	// 球谐函数计算颜色
 	int sh_start = start + SH_IDX;
 	vec3 dir = g_pos.xyz - cam_pos;
     dir = normalize(dir);
 	color = SH_C0 * get_vec3(sh_start);
 	
-	if (sh_dim > 3 && render_mod >= 1)  // 1 * 3
+	if (sh_dim > 3 && render_mod >= 1)
 	{
 		float x = dir.x;
 		float y = dir.y;
 		float z = dir.z;
 		color = color - SH_C1 * y * get_vec3(sh_start + 1 * 3) + SH_C1 * z * get_vec3(sh_start + 2 * 3) - SH_C1 * x * get_vec3(sh_start + 3 * 3);
 
-		if (sh_dim > 12 && render_mod >= 2)  // (1 + 3) * 3
+		if (sh_dim > 12 && render_mod >= 2)
 		{
 			float xx = x * x, yy = y * y, zz = z * z;
 			float xy = x * y, yz = y * z, xz = x * z;
@@ -194,7 +206,7 @@ void main()
 				SH_C2_3 * xz * get_vec3(sh_start + 7 * 3) +
 				SH_C2_4 * (xx - yy) * get_vec3(sh_start + 8 * 3);
 
-			if (sh_dim > 27 && render_mod >= 3)  // (1 + 3 + 5) * 3
+			if (sh_dim > 27 && render_mod >= 3)
 			{
 				color = color +
 					SH_C3_0 * y * (3.0f * xx - yy) * get_vec3(sh_start + 9 * 3) +
